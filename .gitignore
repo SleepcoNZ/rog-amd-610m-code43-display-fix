@@ -19,6 +19,10 @@ state-*.log
 tools/
 *.exe
 
+# Scratch / throwaway investigation scripts
+temp_*.ps1
+_*.ps1
+
 # OS / editor noise
 Thumbs.db
 desktop.ini

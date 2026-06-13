@@ -1,0 +1,25 @@
+# Generated diagnostic output — may contain machine-identifying data
+# (serial numbers, hostnames, hardware IDs). Never publish.
+logs/
+results/
+snapshots/
+*.log
+*.log.old
+*.html
+
+# Result/scratch text & json dumps
+results/*.txt
+results/*.json
+mux-*.log
+state-*.log
+*.FAILOVER
+*.done
+
+# Third-party binaries (do not redistribute — download from upstream)
+tools/
+*.exe
+
+# OS / editor noise
+Thumbs.db
+desktop.ini
+.vs/

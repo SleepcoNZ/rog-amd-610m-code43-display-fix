@@ -25,6 +25,12 @@ and Device Manager shows the **AMD Radeon 610M with a yellow ⚠ / Code 43**:
    screens black). A cold boot also clears the AMD Code 43.
 3. If the panel comes up **stuck at 640×480**, force native resolution with
    [`Force-Resolution.ps1`](Force-Resolution.ps1) — no reboot needed.
+4. If, after switching to Ultimate, a **cold boot comes up at a blind low
+   resolution** (e.g. 1024×768) with **no other resolutions available** in
+   Display Settings — the NVIDIA GPU trained the panel link *without reading its
+   EDID* — **disable then re‑enable the NVIDIA adapter** in Device Manager (or
+   just run [`Recover-Display.ps1`](Recover-Display.ps1)). That forces a fresh
+   EDID read and the native mode table reappears instantly. No reboot needed.
 
 That's it. The rest of this repo automates detection + recovery so you don't
 have to remember any of it.
@@ -66,7 +72,7 @@ flowchart LR
 
 | Script | What it does |
 |--------|--------------|
-| [`Recover-Display.ps1`](Recover-Display.ps1) | **The recovery engine.** Runs an escalating, self‑stopping ladder: force native resolution → GPU stack reset → driver rescan / service restart → AMD iGPU power‑cycle → DisplaySwitch mode‑set → re‑apply known‑good registry → (last resort) reboot ladder with loop protection. Re‑checks panel health after every step and **exits the instant the panel is usable**. |
+| [`Recover-Display.ps1`](Recover-Display.ps1) | **The recovery engine.** Runs an escalating, self‑stopping ladder: force native resolution → NVIDIA adapter recycle (forces a panel EDID re‑read for the cold‑boot low‑res case) → GPU stack reset → driver rescan / service restart → AMD iGPU power‑cycle → DisplaySwitch mode‑set → re‑apply known‑good registry → (last resort) reboot ladder with loop protection. Re‑checks panel health after every step and **exits the instant the panel is usable**. |
 | [`Install-AutoRecovery.ps1`](Install-AutoRecovery.ps1) | Registers a single scheduled task (`Display_AutoRecover_ROG`) that runs the engine at **logon / wake / unlock**, elevated, in the interactive session. Removes older/duplicate tasks. Run once, as admin. |
 | [`Set-GpuMux.ps1`](Set-GpuMux.ps1) | Flips the **hardware GPU MUX** between **Ultimate** (panel → NVIDIA) and **Optimus** (panel → AMD) via the ASUS ATK WMI interface. Read‑before‑write, reversible, optional auto‑reboot. |
 | [`Force-Resolution.ps1`](Force-Resolution.ps1) | Forces the internal panel back to its **native resolution** (fixes the 640×480 stuck state). Non‑destructive, no reboot. |

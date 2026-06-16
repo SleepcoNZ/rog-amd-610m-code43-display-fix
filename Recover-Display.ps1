@@ -12,6 +12,11 @@
       A) Panel stuck at a generic 640x480 fallback (driver loaded but the native
          mode table wasn't bound). FIX: force native resolution -- instant, safe.
       B) Panel black (firmware/MUX init fault). FIX: a full COLD boot.
+      C) Panel lit but stuck at a blind low resolution (e.g. 1024x768) with NO
+         native mode table, because the NVIDIA dGPU trained the eDP link on a
+         cold boot WITHOUT reading the panel's EDID. Step 1 has nothing native to
+         switch to. FIX: recycle the NVIDIA adapter (disable -> rescan -> enable)
+         to force a fresh EDID read, then bind native resolution -- instant, safe.
 
     This engine runs a single escalating ladder and re-checks panel health after
     every step. "Healthy" now means the internal panel is active AND at a usable
@@ -23,12 +28,13 @@
 
     Ladder (stops at the first step that makes the panel usable):
       1. Force native resolution     ChangeDisplaySettingsEx (no admin)
-      2. GPU stack reset             Win+Ctrl+Shift+B        (interactive)
-      3. pnputil rescan + service    restart GPU svcs        (admin)
-      4. AMD iGPU disable/enable     pnp cycle               (admin)
-      5. DisplaySwitch mode-set      /extend,/clone          (interactive)
-      6. Re-apply known-good registry TDR/power harden       (admin)
-      7. Reboot ladder               restart -> cold off     (admin, last resort)
+      2. NVIDIA adapter recycle      EDID re-read            (admin)
+      3. GPU stack reset             Win+Ctrl+Shift+B        (interactive)
+      4. pnputil rescan + service    restart GPU svcs        (admin)
+      5. AMD iGPU disable/enable     pnp cycle               (admin)
+      6. DisplaySwitch mode-set      /extend,/clone          (interactive)
+      7. Re-apply known-good registry TDR/power harden       (admin)
+      8. Reboot ladder               restart -> cold off     (admin, last resort)
 
 .PARAMETER NoReboot
     Run the software ladder only; never reboot. Use for live / manual recovery
@@ -194,6 +200,19 @@ function Get-DisplayState {
     $curW = if ($cur) { [int]$cur.W } else { 0 }
     $curH = if ($cur) { [int]$cur.H } else { 0 }
 
+    # Get-CurrentMode (EnumDisplaySettings) can intermittently return 0x0 even
+    # when the desktop is live and at native resolution. The per-GPU
+    # Win32_VideoController resolution captured above is authoritative for the
+    # active output, so fall back to the largest active-controller resolution
+    # when the P/Invoke read comes back empty. Without this, the health check
+    # sees CurrentW=0, declares the panel "down", and the scheduled task runs the
+    # full (disruptive) ladder on every boot even when nothing is wrong.
+    if ($curW -le 0) {
+        foreach ($g in @($nv, $amd)) {
+            if ($g -and [int]$g.W -gt $curW) { $curW = [int]$g.W; $curH = [int]$g.H }
+        }
+    }
+
     $nativeW = 0; $nativeH = 0
     try {
         $best = Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorListedSupportedSourceModes -EA SilentlyContinue |
@@ -305,7 +324,68 @@ function Set-NativeResolution {
     }
 }
 
-# Step 2 -- GPU stack reset (Win+Ctrl+Shift+B). Requires an interactive session.
+# Step 2 -- NVIDIA adapter recycle to force a panel EDID re-read. Admin.
+# Cold-boot failure mode (observed 2026-06-16): in Ultimate mode the NVIDIA dGPU
+# drives the built-in panel, but on some cold boots the eDP link trains without
+# reading the panel's EDID. Result: no native mode table (only a few generic
+# low-res entries like 1024x768), so Step 1 has nothing native to switch to and
+# the panel sits at a blind fallback resolution. Disabling then re-enabling the
+# NVIDIA adapter forces a fresh EDID read; the native mode table reappears and
+# the desktop snaps back to native.
+#
+# SAFETY: in Ultimate mode the NVIDIA adapter is driving the ONLY active display,
+# so disabling it blacks the screen. The re-enable is therefore done in a
+# finally{} block with retries so the panel ALWAYS comes back even if a later
+# line throws. Only runs when NVIDIA is the active output GPU.
+function Invoke-NvidiaEdidRecycle {
+    param($State)
+    Write-Log 'STEP 2: NVIDIA adapter recycle (force panel EDID re-read)' 'STEP'
+    if (-not (Test-IsAdmin)) { Write-Log '  not elevated -- skipping' 'WARN'; return }
+    if (-not $State.Nvidia)  { Write-Log '  NVIDIA device not present -- skipping' 'WARN'; return }
+    # Only meaningful when NVIDIA is actually driving an active output (Ultimate
+    # mode). In Optimus the panel is on the AMD iGPU and this would not help.
+    if ([int]$State.Nvidia.W -le 0) {
+        Write-Log '  NVIDIA is not the active output GPU (Optimus?) -- skipping' 'WARN'
+        return
+    }
+
+    $nvId = $State.Nvidia.InstanceId
+    try {
+        Write-Log "  disabling $($State.Nvidia.Name) (screen will blank briefly)" 'INFO'
+        Disable-PnpDevice -InstanceId $nvId -Confirm:$false -EA Stop
+        Start-Sleep -Seconds 3
+        Write-Log '  rescanning hardware (pnputil /scan-devices)' 'INFO'
+        & pnputil /scan-devices 2>&1 | Out-Null
+        Start-Sleep -Seconds 1
+    } catch {
+        Write-Log "  disable/rescan error: $($_.Exception.Message)" 'WARN'
+    } finally {
+        # ALWAYS bring the adapter back, with retries, so we never leave the
+        # only display disabled.
+        $reEnabled = $false
+        for ($i = 1; $i -le 5; $i++) {
+            try {
+                Enable-PnpDevice -InstanceId $nvId -Confirm:$false -EA Stop
+                Write-Log "  NVIDIA adapter re-enabled (attempt $i)" 'OK'
+                $reEnabled = $true
+                break
+            } catch {
+                Write-Log "  re-enable attempt $i failed: $($_.Exception.Message)" 'WARN'
+                Start-Sleep -Seconds 2
+            }
+        }
+        if (-not $reEnabled) {
+            Write-Log '  CRITICAL: could not re-enable NVIDIA adapter -- a reboot will restore it.' 'ERROR'
+        }
+    }
+
+    # Let the EDID re-read and mode table rebuild, then bind native resolution.
+    Start-Sleep -Seconds 5
+    $fresh = Get-DisplayState
+    Set-NativeResolution -State $fresh
+}
+
+# Step 3 -- GPU stack reset (Win+Ctrl+Shift+B). Requires an interactive session.
 function Invoke-GraphicsStackReset {
     Write-Log 'STEP 1: GPU stack reset (Win+Ctrl+Shift+B)' 'STEP'
     if ([Environment]::UserInteractive -eq $false) {
@@ -471,6 +551,7 @@ Write-Log 'Built-in panel is DOWN -- starting escalation ladder.' 'WARN'
 # 640x480 case) before any GPU cycling or reboot.
 $softwareSteps = @(
     { Set-NativeResolution -State $state }
+    { Invoke-NvidiaEdidRecycle -State $state }
     { Invoke-GraphicsStackReset }
     { Invoke-RescanAndServices }
     { Invoke-AmdDeviceCycle -State $state }

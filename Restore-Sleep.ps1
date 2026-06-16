@@ -39,12 +39,15 @@ try {
     L "[OK] CsEnabled: -> 1 (Connected Standby enabled)"
 } catch { L "[FAIL] $($_.Exception.Message)" }
 
-# 2. Re-enable hibernation
+# 2. Keep hibernation + Fast Startup OFF (Fast Startup leaves the GPU MUX
+#    half-initialised on warm boot -- it must stay disabled for reliable
+#    display init). Sleep (S0 Modern Standby) does NOT require hibernate.
 L ""
-L "--- 2. Re-enabling Hibernation ---"
+L "--- 2. Hibernation / Fast Startup kept OFF (required by the display fix) ---"
 try {
-    & powercfg /hibernate on
-    L "[OK] Hibernation re-enabled"
+    & powercfg /hibernate off
+    Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power' -Name 'HiberbootEnabled' -Value 0 -Type DWord -Force
+    L "[OK] Hibernate off, Fast Startup off (HiberbootEnabled=0)"
 } catch { L "[FAIL] $($_.Exception.Message)" }
 
 # 3. Restore power button / lid / sleep button to sensible defaults

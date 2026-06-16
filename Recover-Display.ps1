@@ -467,14 +467,18 @@ function Set-KnownGoodRegistry {
     Write-Log 'STEP 5: re-apply known-good registry (harden for next boot)' 'STEP'
     if (-not (Test-IsAdmin)) { Write-Log '  not elevated -- skipping' 'WARN'; return }
     $reg = @{
-        'HKLM:\SYSTEM\CurrentControlSet\Control\Power' = @{
-            PlatformAoAcOverride = 0; CsEnabled = 0; HibernateEnabled = 0; HibernateEnabledDefault = 0
-        }
+        # Fast Startup OFF: a hibernation-based warm boot leaves the GPU MUX
+        # half-initialised. This must stay disabled for reliable display init.
         'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power' = @{ HiberbootEnabled = 0 }
+        # TDR hardening: give the GPU longer before Windows resets the driver.
         'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' = @{
             TdrDelay = 30; TdrDdiDelay = 30; TdrLimitCount = 10; TdrLimitTime = 60
         }
     }
+    # NOTE: this step intentionally does NOT disable sleep / Modern Standby
+    # (PlatformAoAcOverride / CsEnabled / HibernateEnabled). The original
+    # sleep/resume Code 43 was cured by the MUX->Ultimate switch (the AMD iGPU is
+    # out of the display path), so sleep is left enabled per user preference.
     foreach ($k in $reg.Keys) {
         if (-not (Test-Path $k)) { New-Item $k -Force | Out-Null }
         foreach ($v in $reg[$k].GetEnumerator()) {
